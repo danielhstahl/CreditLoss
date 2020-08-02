@@ -12,13 +12,23 @@ class RiskMetrics extends FunSuite {
     val xMax = 20.0
     val alpha = 0.05
     val normCf = (u: Complex) => (u * mu + 0.5 * sigma * sigma * u * u).exp
-    val referenceVar = 6.224268
+    val referenceVar = 6.224268134737102
     val referenceEs = 8.313564
     val discreteCf = FangOost.getDiscreteCf(numU, xMin, xMax, normCf)
     val (actualVar, actualEs) =
       FangOost.getRiskMetrics(alpha, xMin, xMax, discreteCf)
     assert(actualVar === referenceVar)
     assert(actualEs === referenceEs)
+  }
+  test("it computes expectation correctly") {
+    val mu = 2.0
+    val sigma = 5.0
+    val numU = 128
+    val xMin = (-20.0)
+    val xMax = 20.0
+    val alpha = 0.05
+    val normCf = (u: Complex) => (u * mu + 0.5 * sigma * sigma * u * u).exp
+    val discreteCf = FangOost.getDiscreteCf(numU, xMin, xMax, normCf)
   }
 }
 //sbt -java-home /usr/lib/jvm/java-8-openjdk-amd64 test

@@ -188,7 +188,7 @@ object FangOost {
       -valueAtRisk,
       cf,
       (u, x, uIndex) => vkPe(u, x, xMin, uIndex)
-    )
+    )/alpha
   }
 
   def getRiskMetrics(
