@@ -17,6 +17,14 @@ object FangOost {
     val du = computeDu(xMin, xMax)
     (1 to numU).map(index => getComplexU(getU(du, index - 1)))
   }
+  def getDiscreteCf(
+      numU: Int,
+      xMin: Double,
+      xMax: Double,
+      cfFn: (Complex) => Complex
+  ): Seq[Complex] = {
+    getUDomain(numU, xMin, xMax).map(cfFn)
+  }
   private[this] def computeDx(
       xDiscrete: Int,
       xMin: Double,
@@ -32,7 +40,7 @@ object FangOost {
     (1 to xDiscrete).map(i => getX(xMin, dx, i - 1))
   }
   private[this] def computeCp(du: Double): Double = {
-    2.0 * du / Pi
+    (2.0 * du) / Pi
   }
   private[this] def convolute(
       cfIncr: Complex,
@@ -169,7 +177,7 @@ object FangOost {
         cf,
         (u, x, uIndex) => vkCdf(u, x, xMin, uIndex)
       ) - alpha
-    -RootFinding.find(f, xMin, Some(xMax))
+    -RootFinding.bisection(f, xMin, xMax)
   }
   private[this] def getExpectedShortfall(
       alpha: Double,
@@ -194,6 +202,7 @@ object FangOost {
       cf: Seq[Complex]
   ): (Double, Double) = {
     val valueAtRisk = getValueAtRisk(alpha, xMin, xMax, cf)
+
     val expectedShortfall =
       getExpectedShortfall(alpha, xMin, xMax, valueAtRisk, cf)
     (valueAtRisk, expectedShortfall)
