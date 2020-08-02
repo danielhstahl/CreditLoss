@@ -4,9 +4,6 @@ import breeze.math.Complex
 import scala.math
 import breeze.optimize.RootFinding
 object FangOost {
-  private[this] def getComplexU(u: Double): Complex = {
-    Complex(0.0, u)
-  }
   private[this] def getU(du: Double, index: Int): Double = {
     du * index
   }
@@ -15,7 +12,7 @@ object FangOost {
   }
   def getUDomain(numU: Int, xMin: Double, xMax: Double): Seq[Complex] = {
     val du = computeDu(xMin, xMax)
-    (1 to numU).map(index => getComplexU(getU(du, index - 1)))
+    (1 to numU).map(index => Complex(0.0, getU(du, index - 1)))
   }
   def getDiscreteCf(
       numU: Int,
@@ -42,7 +39,7 @@ object FangOost {
   private[this] def computeCp(du: Double): Double = {
     (2.0 * du) / Pi
   }
-  private[this] def convolute(
+  private[this] def convoluteVk(
       cfIncr: Complex,
       x: Double,
       uIm: Double,
@@ -60,7 +57,7 @@ object FangOost {
       x: Double,
       convolute: (Complex, Double, Double, Int) => Double
   ) = {
-    cfAdjusted.view.zipWithIndex
+    cfAdjusted.zipWithIndex
       .map({
         case (cf, i) => convolute(cf * adjustIndex(i), x, getU(du, i), i)
       })
@@ -84,7 +81,6 @@ object FangOost {
     getUDomain(cf.length, xMin, xMax)
       .zip(cf)
       .map({ case (u, f) => adjustCf(f, u, xMin, cp) })
-      .toSeq
   }
   private[this] def getExpectationGenericSingleElement(
       xMin: Double,
@@ -119,7 +115,7 @@ object FangOost {
       xMax,
       xDomain,
       cf,
-      (cf, x, u, i) => convolute(cf, x, u, i, vk)
+      (cf, x, u, i) => convoluteVk(cf, x, u, i, vk)
     )
   }
   def getExtendedExpectationSingleElement(
@@ -134,7 +130,7 @@ object FangOost {
       xMax,
       x,
       cf,
-      (cf, x, u, i) => convolute(cf, x, u, i, vk)
+      (cf, x, u, i) => convoluteVk(cf, x, u, i, vk)
     )
   }
   def getDensity(
@@ -177,7 +173,7 @@ object FangOost {
         cf,
         (u, x, uIndex) => vkCdf(u, x, xMin, uIndex)
       ) - alpha
-    -RootFinding.bisection(f, xMin, xMax)
+    -RootFinding.find(f, xMin, Some(xMax))
   }
   private[this] def getExpectedShortfall(
       alpha: Double,
