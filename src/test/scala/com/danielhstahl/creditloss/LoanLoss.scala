@@ -19,11 +19,8 @@ class LoanLossDistribution extends FunSuite with DataFrameSuiteBase {
         (u: Complex, l: Double, lgdVariance: Double) => (u * l).exp,
         LoanLoss.getLiquidityRiskFn(50.0, 0.0)
       )
-    print(portfolioMetrics.cf)
     assert(portfolioMetrics.cf.length === 256 * 3)
     assert(portfolioMetrics.el.length === 3)
     assert(portfolioMetrics.variance.length === 3)
-
-    //assert(results === expected)
   }
 }

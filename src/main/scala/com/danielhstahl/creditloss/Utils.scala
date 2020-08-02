@@ -52,25 +52,33 @@ class SumArrayElement extends UserDefinedAggregateFunction {
 
   // Updated based on Input
   override def update(buffer: MutableAggregationBuffer, input: Row): Unit = {
-    buffer(0) = buffer
+    buffer(0) = input
       .getAs[Seq[Seq[Double]]](0)
-      .zip(input.getAs[Seq[Seq[Double]]](0))
+      .zipAll(
+        buffer
+          .getAs[Seq[Seq[Double]]](0),
+        Seq(0.0, 0.0),
+        Seq(0.0, 0.0)
+      )
       .map { case (a, b) => Seq(a(0) + b(0), a(1) + b(1)) }
-    //buffer(1) = buffer.getAs[Double](1) + (1.toDouble / input.getAs[Double](0))
+
   }
 
   // Merge two schemas
   override def merge(buffer1: MutableAggregationBuffer, buffer2: Row): Unit = {
     buffer1(0) = buffer1
       .getAs[Seq[Seq[Double]]](0)
-      .zip(buffer2.getAs[Seq[Seq[Double]]](0))
+      .zipAll(
+        buffer2
+          .getAs[Seq[Seq[Double]]](0),
+        Seq(0.0, 0.0),
+        Seq(0.0, 0.0)
+      )
       .map { case (a, b) => Seq(a(0) + b(0), a(1) + b(1)) }
-    //buffer1(1) = buffer1.getAs[Double](1) + buffer2.getAs[Double](1)
   }
 
   // Output
   override def evaluate(buffer: Row): Any = {
-    //buffer.getLong(0) / buffer.getDouble(1)
     buffer.getSeq(0)
   }
 }
@@ -100,14 +108,14 @@ class SumDoubleElement extends UserDefinedAggregateFunction {
 
   // Initial values
   override def initialize(buffer: MutableAggregationBuffer): Unit = {
-    buffer(0) = Seq(0.0, 0.0)
+    buffer(0) = Seq(0.0)
   }
 
   // Updated based on Input
   override def update(buffer: MutableAggregationBuffer, input: Row): Unit = {
     buffer(0) = buffer
       .getAs[Seq[Double]](0)
-      .zip(input.getAs[Seq[Double]](0))
+      .zipAll(input.getAs[Seq[Double]](0), 0.0, 0.0)
       .map { case (a, b) => a + b }
     //buffer(1) = buffer.getAs[Double](1) + (1.toDouble / input.getAs[Double](0))
   }
@@ -116,7 +124,7 @@ class SumDoubleElement extends UserDefinedAggregateFunction {
   override def merge(buffer1: MutableAggregationBuffer, buffer2: Row): Unit = {
     buffer1(0) = buffer1
       .getAs[Seq[Double]](0)
-      .zip(buffer2.getAs[Seq[Double]](0))
+      .zipAll(buffer2.getAs[Seq[Double]](0), 0.0, 0.0)
       .map { case (a, b) => a + b }
   }
 

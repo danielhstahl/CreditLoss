@@ -291,4 +291,12 @@ object LoanLoss {
       })
       .head
   }
+  def getFullCF(
+      numWeight: Int,
+      cf: Seq[Complex],
+      mgf: (Seq[Complex]) => Complex
+  ): Seq[Complex] = {
+    cf.grouped(numWeight).map(mgf).toSeq
+  }
+
 }
