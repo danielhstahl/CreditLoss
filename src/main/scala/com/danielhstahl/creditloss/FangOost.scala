@@ -159,6 +159,27 @@ object FangOost {
     if (k == 0) diffPow(x, a)
     else x * math.sin(arg) * uDen + uDen * uDen * (math.cos(arg) - 1.0)
   }
+  private[this] def vkPv(
+      u: Double,
+      x: Double,
+      c: Double,
+      a: Double,
+      k: Int
+  ): Double = {
+    val arg = (x - a) * u
+    val uDen = 1.0 / u
+    val diffAx = a - x
+    val diffXc = x - c
+    if (k == 0) {
+      -diffAx * diffAx * diffAx / 3.0 - diffAx * diffAx * diffXc - diffAx * diffXc * diffXc
+    } else {
+      diffXc * diffXc * math.sin(arg) * uDen - 2.0 * math.sin(
+        arg
+      ) * uDen * uDen * uDen + 2.0 * (diffXc * math.cos(
+        arg
+      ) + c - a) * uDen * uDen
+    }
+  }
   private[this] def getValueAtRisk(
       alpha: Double,
       xMin: Double,
@@ -188,7 +209,7 @@ object FangOost {
       -valueAtRisk,
       cf,
       (u, x, uIndex) => vkPe(u, x, xMin, uIndex)
-    )/alpha
+    ) / alpha
   }
 
   def getRiskMetrics(
@@ -210,6 +231,24 @@ object FangOost {
       xMax,
       cf,
       (u, x, uIndex) => vkPe(u, x, xMin, uIndex)
+    )
+  }
+  def getVariance(xMin: Double, xMax: Double, cf: Seq[Complex]): Double = {
+    val expectation = getExpectation(xMin, xMax, cf)
+    getVarianceWithExpectation(xMin, xMax, expectation, cf)
+  }
+  def getVarianceWithExpectation(
+      xMin: Double,
+      xMax: Double,
+      expectation: Double,
+      cf: Seq[Complex]
+  ): Double = {
+    getExtendedExpectationSingleElement(
+      xMin,
+      xMax,
+      xMax,
+      cf,
+      (u, x, uIndex) => vkPv(u, x, expectation, xMin, uIndex)
     )
   }
 }

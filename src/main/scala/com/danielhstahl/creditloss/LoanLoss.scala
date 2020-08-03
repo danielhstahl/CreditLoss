@@ -82,7 +82,6 @@ object LoanLoss {
   ): Seq[Double] = {
     weight.map(w => (-lgd * balance * w * pd * num))
   }
-
   def getVarFromLoan(
       balance: Double,
       lgd: Double,
@@ -91,9 +90,8 @@ object LoanLoss {
       lgdVariance: Double,
       num: Int
   ): Seq[Double] = {
-    weight.map(w =>
-      (1.0 + lgdVariance) * math.pow(lgd * balance, 2.0) * w * pd * num
-    )
+    val l = lgd * balance
+    weight.map(w => (1.0 + lgdVariance) * l * l * w * pd * num)
   }
   def getLambdaFromLoan(balance: Double, r: Double, num: Int): Double = {
     balance * r * num
@@ -111,7 +109,7 @@ object LoanLoss {
       systemicVariance: Seq[Double]
   ): Double = {
     val ep = (portfolioEl, systemicVariance).zipped
-      .map((a, b) => math.pow(a, 2.0) * b)
+      .map((a, b) => a * a * b)
       .sum
     val vp = (portfolioVariance, systemicEl).zipped.map(_ * _).sum
     vp + ep
@@ -134,10 +132,13 @@ object LoanLoss {
   ): Double = {
     expectation * (1.0 + q * lambda)
   }
-  def getLiquidityRiskFn(lambda: Double, q: Double): (Complex) => Complex = {
-    (u: Complex) => u - ((-u * lambda).exp - 1.0) * q
+  private[this] def getLiquidityRiskFn(
+      lambda: Double,
+      q: Double
+  ): (Complex) => Complex = { (u: Complex) =>
+    u - ((-u * lambda).exp - 1.0) * q
   }
-  def getLogLpmCf(
+  private[this] def getLogLpmCf(
       lgdCf: (Complex, Double, Double) => Complex,
       liquidityCf: (Complex) => Complex
   ): (Complex, Double, Double, Double, Double) => Complex = {
@@ -199,7 +200,7 @@ object LoanLoss {
     elScalarIncremental * expectationIncremental + elScalarTotal * expectationTotal + c * (varianceScalarIncremental * varianceIncremental + varianceScalarTotal * varianceTotal - expectationIncremental * q * lambda0 * lambda0 - expectationTotal * varianceElTotal) / portfolioStandardDeviation
   }
 
-  def getCFForLoan(
+  private[this] def getCFForLoan(
       uCf: Seq[Seq[Double]],
       weight: Seq[Double],
       num: Int
@@ -209,9 +210,10 @@ object LoanLoss {
       val rowNum = VecToMat.getRowFromIndex(i - 1, weight.length)
       val colNum = VecToMat.getColFromIndex(i - 1, weight.length)
       val cmp = uCf(colNum)
+      val scalar = weight(rowNum) * num
       Seq(
-        cmp(0) * weight(rowNum) * num,
-        cmp(1)
+        cmp(0) * scalar,
+        cmp(1) * scalar
       ) //note that I'm doing complex multiplication here
     })
   }
@@ -219,11 +221,12 @@ object LoanLoss {
       loanDF: DataFrame,
       numU: Int,
       xMin: Double,
-      lgdCf: (Complex, Double, Double) => Complex,
-      liquidityCf: (Complex) => Complex
+      lambda: Double,
+      q: Double,
+      lgdCf: (Complex, Double, Double) => Complex
   ): PortfolioMetrics = {
     val uDomain = FangOost.getUDomain(numU, xMin, 0.0)
-    val logCf = getLogLpmCf(lgdCf, liquidityCf)
+    val logCf = getLogLpmCf(lgdCf, getLiquidityRiskFn(lambda, q))
     val logLpmCFUDF =
       udf((balance: Double, pd: Double, lgd: Double, lgdVariance: Double) =>
         uDomain
