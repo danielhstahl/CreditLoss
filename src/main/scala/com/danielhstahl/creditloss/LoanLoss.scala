@@ -28,6 +28,16 @@ object LoanLossSim {
     Array(0.1, 0.6, 0.3),
     Array(0.4, 0.2, 0.4)
   )
+  val schema = StructType(
+    Seq(
+      StructField("balance", DoubleType, false),
+      StructField("pd", DoubleType, false),
+      StructField("lgd", DoubleType, false),
+      StructField("weight", ArrayType(DoubleType, false), false),
+      StructField("r", DoubleType, true),
+      StructField("lgd_variance", DoubleType, true)
+    )
+  )
   def simulateRange(min: Double, max: Double, rand: Random): Double = {
     min + (max - min) * rand.nextDouble
   }
@@ -41,7 +51,7 @@ object LoanLossSim {
   ): DataFrame = {
     val r = new Random(seed)
     val rows = (1 to numLoans).map(v => simulateLoan(r))
-    spark.createDataFrame(spark.sparkContext.parallelize(rows), LoanLoss.schema)
+    spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
   }
   def simulateLoan(rand: Random): Row = {
     Row(
@@ -61,76 +71,43 @@ case class PortfolioMetrics(
     variance: Seq[Double],
     lambda: Double
 )
-object LoanLoss {
-  val schema = StructType(
-    Seq(
-      StructField("balance", DoubleType, false),
-      StructField("pd", DoubleType, false),
-      StructField("lgd", DoubleType, false),
-      StructField("weight", ArrayType(DoubleType, false), false),
-      StructField("r", DoubleType, true),
-      StructField("lgd_variance", DoubleType, true)
-    )
-  )
+class LoanLoss(
+    q: Double,
+    lambda: Double,
+    xMin: Double,
+    systemicExpectation: Seq[Double],
+    systemicVariance: Seq[Double]
+) {
 
-  def getElFromLoan(
-      balance: Double,
-      lgd: Double,
-      pd: Double,
-      weight: Seq[Double],
-      num: Int
-  ): Seq[Double] = {
-    weight.map(w => (-lgd * balance * w * pd * num))
-  }
-  def getVarFromLoan(
-      balance: Double,
-      lgd: Double,
-      pd: Double,
-      weight: Seq[Double],
-      lgdVariance: Double,
-      num: Int
-  ): Seq[Double] = {
-    val l = lgd * balance
-    weight.map(w => (1.0 + lgdVariance) * l * l * w * pd * num)
-  }
-  def getLambdaFromLoan(balance: Double, r: Double, num: Int): Double = {
-    balance * r * num
-  }
-  def portfolioExpectation(
-      portfolioEl: Seq[Double],
-      systemicEl: Seq[Double]
+  val numWeight = systemicExpectation.length
+  var cf: Seq[Complex] = Seq()
+  var loanEl: Seq[Double] = Seq()
+  var loanVariance: Seq[Double] = Seq()
+  var loanLambda: Double = 0.0
+
+  private[this] def nonLiquidityExpectation(
   ): Double = {
-    (portfolioEl, systemicEl).zipped.map(_ * _).sum
+    (loanEl, systemicExpectation).zipped.map(_ * _).sum
   }
-  def portfolioVariance(
-      portfolioEl: Seq[Double],
-      systemicEl: Seq[Double],
-      portfolioVariance: Seq[Double],
-      systemicVariance: Seq[Double]
+  private[this] def nonLiquidityVariance(
   ): Double = {
-    val ep = (portfolioEl, systemicVariance).zipped
+    val ep = (loanEl, systemicVariance).zipped
       .map((a, b) => a * a * b)
       .sum
-    val vp = (portfolioVariance, systemicEl).zipped.map(_ * _).sum
+    val vp = (loanVariance, systemicExpectation).zipped.map(_ * _).sum
     vp + ep
   }
-  def portfolioVarianceWithLiquidity(
-      lambda: Double,
-      q: Double,
-      portfolioExpectation: Double,
-      portfolioVariance: Double
+  //I could memoize, but overly complex given how simple the function is to compute
+  def portfolioVariance(
   ): Double = {
-    portfolioVariance * math.pow(
+    nonLiquidityVariance() * math.pow(
       1.0 + q * lambda,
       2.0
-    ) - portfolioExpectation * q * lambda * lambda
+    ) - nonLiquidityExpectation() * q * lambda * lambda
   }
-  def portfolioExpectationWithLiquidity(
-      lambda: Double,
-      q: Double,
-      expectation: Double
+  def portfolioExpectation(
   ): Double = {
-    expectation * (1.0 + q * lambda)
+    nonLiquidityExpectation() * (1.0 + q * lambda)
   }
   private[this] def getLiquidityRiskFn(
       lambda: Double,
@@ -158,73 +135,42 @@ object LoanLoss {
       weight: Seq[Double],
       r: Double,
       lgdVariance: Double,
-      num: Int,
-      portfolioElByWeight: Seq[Double],
-      systemicEl: Seq[Double], //typically list of ones
-      portfolioVarianceByWeight: Seq[Double],
-      systemicVariance: Seq[Double],
-      lambda0: Double, //base loss per liquidity event
-      lambda: Double, //sum of r*balance over all loans
-      q: Double, //probability of liquidity event, scaled by total portfolio loss
       c: Double //scalar for multiplying covariance.  Typically (rho(X)-E[X])/sqrt(Var(X))
   ): Double = {
-    val elScalarIncremental = 1.0 + q * lambda0
-    val elScalarTotal = q * getLambdaFromLoan(balance, r, num)
-    val expectationTotal = portfolioExpectation(portfolioElByWeight, systemicEl)
-    val varianceTotal = portfolioVariance(
-      portfolioElByWeight,
-      systemicEl,
-      portfolioVarianceByWeight,
-      systemicVariance
-    )
-    val portfolioStandardDeviation = portfolioVarianceWithLiquidity(
-      lambda,
-      q,
-      expectationTotal,
-      varianceTotal
-    )
+    val elScalarIncremental = 1.0 + q * lambda
+    val elScalarTotal = q * SparkMethods.getLambdaFromLoan(balance, r, 1)
+    val nlExpectation = nonLiquidityExpectation()
+    val nlVariance = nonLiquidityVariance()
+    val portfolioStandardDeviation = math.sqrt(portfolioVariance())
     val varianceScalarIncremental = elScalarIncremental * elScalarIncremental
     val varianceScalarTotal =
-      elScalarTotal * (2.0 * elScalarIncremental + q * lambda)
-    val varianceElTotal = elScalarTotal * (2.0 * lambda0 + lambda)
+      elScalarTotal * (2.0 * elScalarIncremental + q * loanLambda)
+    val varianceElTotal = elScalarTotal * (2.0 * lambda + loanLambda)
     val expectationIncremental =
-      (systemicEl, getElFromLoan(balance, lgd, pd, weight, num)).zipped
+      (
+        systemicExpectation,
+        SparkMethods.getElFromLoan(balance, lgd, pd, weight, 1)
+      ).zipped
         .map(_ * _)
         .sum
     val varianceIncremental = (
-      systemicEl,
-      getVarFromLoan(balance, lgd, pd, weight, lgdVariance, num)
+      systemicExpectation,
+      SparkMethods.getVarFromLoan(balance, lgd, pd, weight, lgdVariance, 1)
     ).zipped
       .map(_ * _)
-      .sum
-    elScalarIncremental * expectationIncremental + elScalarTotal * expectationTotal + c * (varianceScalarIncremental * varianceIncremental + varianceScalarTotal * varianceTotal - expectationIncremental * q * lambda0 * lambda0 - expectationTotal * varianceElTotal) / portfolioStandardDeviation
+      .sum + (
+      systemicVariance,
+      SparkMethods.getElFromLoan(balance, lgd, pd, weight, 1),
+      loanEl
+    ).zipped.map(_ * _ * _).sum
+    elScalarIncremental * expectationIncremental + elScalarTotal * nlExpectation + c * (varianceScalarIncremental * varianceIncremental + varianceScalarTotal * nlVariance - expectationIncremental * q * lambda * lambda - nlExpectation * varianceElTotal) / portfolioStandardDeviation
   }
 
-  private[this] def getCFForLoan(
-      uCf: Seq[Seq[Double]],
-      weight: Seq[Double],
-      num: Int
-  ): Seq[Seq[Double]] = {
-
-    (1 to weight.length * uCf.length).map(i => {
-      val rowNum = VecToMat.getRowFromIndex(i - 1, weight.length)
-      val colNum = VecToMat.getColFromIndex(i - 1, weight.length)
-      val cmp = uCf(colNum)
-      val scalar = weight(rowNum) * num
-      Seq(
-        cmp(0) * scalar,
-        cmp(1) * scalar
-      ) //note that I'm doing complex multiplication here
-    })
-  }
   def getPortfolioMetrics(
       loanDF: DataFrame,
       numU: Int,
-      xMin: Double,
-      lambda: Double,
-      q: Double,
       lgdCf: (Complex, Double, Double) => Complex
-  ): PortfolioMetrics = {
+  ): Unit = {
     val uDomain = FangOost.getUDomain(numU, xMin, 0.0)
     val logCf = getLogLpmCf(lgdCf, getLiquidityRiskFn(lambda, q))
     val logLpmCFUDF =
@@ -236,13 +182,13 @@ object LoanLoss {
           })
       )
 
-    val cfUDF = udf(getCFForLoan _)
-    val elUDF = udf(getElFromLoan _)
-    val varUDF = udf(getVarFromLoan _)
-    val lambdaUDF = udf(getLambdaFromLoan _)
+    val cfUDF = udf(SparkMethods.getCFForLoan _)
+    val elUDF = udf(SparkMethods.getElFromLoan _)
+    val varUDF = udf(SparkMethods.getVarFromLoan _)
+    val lambdaUDF = udf(SparkMethods.getLambdaFromLoan _)
     val complexSum = new SumArrayElement
     val doubleSum = new SumDoubleElement
-    loanDF
+    val results = loanDF
       .withColumn(
         "logCf",
         logLpmCFUDF(col("balance"), col("pd"), col("lgd"), col("lgd_variance"))
@@ -293,13 +239,63 @@ object LoanLoss {
           )
       })
       .head
+    cf = results.cf
+    loanEl = results.el
+    loanVariance = results.variance
+    loanLambda = results.lambda
   }
   def getFullCF(
-      numWeight: Int,
-      cf: Seq[Complex],
-      mgf: (Seq[Complex]) => Complex
+      mgf: (Seq[Double], Seq[Double]) => (Seq[Complex]) => Complex
   ): Seq[Complex] = {
-    cf.grouped(numWeight).map(mgf).toSeq
+
+    cf.grouped(numWeight).map(mgf(systemicExpectation, systemicVariance)).toSeq
   }
 
+}
+
+object SparkMethods {
+  def getCFForLoan(
+      uCf: Seq[Seq[Double]],
+      weight: Seq[Double],
+      num: Int
+  ): Seq[Seq[Double]] = {
+
+    (1 to weight.length * uCf.length).map(i => {
+      val rowNum = VecToMat.getRowFromIndex(i - 1, weight.length)
+      val colNum = VecToMat.getColFromIndex(i - 1, weight.length)
+      val cmp = uCf(colNum)
+      val scalar = weight(rowNum) * num
+      Seq(
+        cmp(0) * scalar,
+        cmp(1) * scalar
+      ) //note that I'm doing complex multiplication here
+    })
+  }
+  def getElFromLoan(
+      balance: Double,
+      lgd: Double,
+      pd: Double,
+      weight: Seq[Double],
+      num: Int
+  ): Seq[Double] = {
+    weight.map(w => (-lgd * balance * w * pd * num))
+  }
+  def getVarFromLoan(
+      balance: Double,
+      lgd: Double,
+      pd: Double,
+      weight: Seq[Double],
+      lgdVariance: Double,
+      num: Int
+  ): Seq[Double] = {
+    val l = lgd * balance
+    weight.map(w => (1.0 + lgdVariance) * l * l * w * pd * num)
+  }
+  def getLambdaFromLoan(
+      balance: Double,
+      r: Double,
+      num: Int
+  ): Double = {
+    balance * r * num
+  }
 }

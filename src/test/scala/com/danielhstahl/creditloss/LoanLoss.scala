@@ -21,18 +21,21 @@ class LoanLossDistribution extends FunSuite with DataFrameSuiteBase {
     val spark = SparkSession.builder.config(sc.getConf).getOrCreate()
     val loanDF =
       LoanLossSim.simulatePortfolio(spark, 30, 42).withColumn("num", lit(1))
-    val portfolioMetrics =
-      LoanLoss.getPortfolioMetrics(
-        loanDF,
-        256,
-        -30 * 1000000.0,
-        50.0,
-        0.0,
-        (u: Complex, l: Double, lgdVariance: Double) => (u * l).exp
-      )
-    assert(portfolioMetrics.cf.length === 256 * 3)
-    assert(portfolioMetrics.el.length === 3)
-    assert(portfolioMetrics.variance.length === 3)
+    val ll = new LoanLoss(
+      50.0,
+      0.0,
+      -30 * 1000000.0,
+      Seq(1.0, 1.0, 1.0),
+      Seq(0.3, 0.3, 0.3)
+    )
+    ll.getPortfolioMetrics(
+      loanDF,
+      256,
+      (u: Complex, l: Double, lgdVariance: Double) => (u * l).exp
+    )
+    assert(ll.cf.length === 256 * 3)
+    assert(ll.loanEl.length === 3)
+    assert(ll.loanVariance.length === 3)
   }
   test("gets correct expectation") {
     val sqlCtx = sqlContext
@@ -76,20 +79,17 @@ class LoanLossDistribution extends FunSuite with DataFrameSuiteBase {
     val expectedPortfolioLoss =
       (-balance1 * lgd1 * pd1 * num1 - balance2 * lgd2 * pd2 * num2 - balance3 * lgd3 * pd3 * num3) //no lambda
     val xMin = expectedPortfolioLoss * 10
-    val portfolioMetrics = LoanLoss.getPortfolioMetrics(
+    val ll =
+      new LoanLoss(50.0, 0.0, xMin, Seq(1.0, 1.0, 1.0), Seq(0.3, 0.3, 0.3))
+    ll.getPortfolioMetrics(
       loanDF,
       256,
-      xMin,
-      50.0, //lambda
-      0.0, //q
       LgdCF.degenerateCf
     )
-    val cf = LoanLoss.getFullCF(
-      3,
-      portfolioMetrics.cf,
+    val cf = ll.getFullCF((e: Seq[Double], v: Seq[Double]) =>
       SystemicVariableCF.degenerateMgf
     )
-    val el = portfolioMetrics.el.sum
+    val el = ll.portfolioExpectation()
     val distEl = FangOost.getExpectation(xMin, 0.0, cf)
     println(el)
     println(distEl)
@@ -140,38 +140,90 @@ class LoanLossDistribution extends FunSuite with DataFrameSuiteBase {
     val expectedPortfolioLoss =
       (-balance1 * lgd1 * pd1 * num1 - balance2 * lgd2 * pd2 * num2 - balance3 * lgd3 * pd3 * num3) //no lambda
     val xMin = expectedPortfolioLoss * 10
-    val portfolioMetrics = LoanLoss.getPortfolioMetrics(
+    val v = Seq(0.3, 0.3, 0.3)
+    val ll =
+      new LoanLoss(50.0, 0.0, xMin, Seq(1.0, 1.0, 1.0), v)
+    val portfolioMetrics = ll.getPortfolioMetrics(
       loanDF,
       256,
-      xMin,
-      50.0, //lambda
-      0.0, //q
       LgdCF.degenerateCf
     )
-    val mgfcf = SystemicVariableCF.gammaMgf(Seq(0.3, 0.3, 0.3))
-    val cf = LoanLoss.getFullCF(
-      3,
-      portfolioMetrics.cf,
-      mgfcf
+    val cf = ll.getFullCF((e: Seq[Double], v: Seq[Double]) =>
+      SystemicVariableCF.gammaMgf(v)
     )
-    val el = portfolioMetrics.el.sum
+    val el = ll.portfolioExpectation()
     val distEl = FangOost.getExpectation(xMin, 0.0, cf)
     println(el)
     println(distEl)
     println(expectedPortfolioLoss)
 
-    val variance = LoanLoss.portfolioVariance(
-      portfolioMetrics.el,
-      Seq(1.0, 1.0, 1.0),
-      portfolioMetrics.variance,
-      Seq(0.3, 0.3, 0.3)
-    )
+    val variance = ll.portfolioVariance()
     val distVar =
       FangOost.getVarianceWithExpectation(xMin, 0.0, expectedPortfolioLoss, cf)
     println(variance)
     println(distVar)
     assert(math.abs(variance - distVar) < 1000)
     assert(el === expectedPortfolioLoss)
+
+  }
+  test("gets correct variance same rust") {
+    val sqlCtx = sqlContext
+    import sqlCtx.implicits._
+    val spark = SparkSession.builder.config(sc.getConf).getOrCreate()
+    val balance = 1.0
+    val pd = 0.05
+    val lgd = 0.5
+    val numLoans = 10000
+    val lambda = 1000
+    val q = 0.01 / (numLoans * pd * lgd * balance)
+    val xMin = (-numLoans * pd * lgd * balance - lambda) * 3.0
+    val v = Seq(0.4, 0.3)
+    val systemicExpectation = Seq(1.0, 1.0)
+    //val mgfcf = SystemicVariableCF.gammaMgf(v)
+    val weight = Seq(0.4, 0.6)
+    val rows = Seq(
+      Row(balance, pd, lgd, weight, 0.0, 0.0, numLoans)
+    )
+    val schema = StructType(
+      Seq(
+        StructField("balance", DoubleType, false),
+        StructField("pd", DoubleType, false),
+        StructField("lgd", DoubleType, false),
+        StructField("weight", ArrayType(DoubleType, false), false),
+        StructField("r", DoubleType, true),
+        StructField("lgd_variance", DoubleType, true),
+        StructField("num", IntegerType, true)
+      )
+    )
+    val loanDF = spark.createDataFrame(
+      spark.sparkContext.parallelize(
+        rows
+      ),
+      schema
+    )
+    val ll = new LoanLoss(lambda, q, xMin, systemicExpectation, v)
+    ll.getPortfolioMetrics(
+      loanDF,
+      256,
+      LgdCF.degenerateCf
+    )
+
+    val cf = ll.getFullCF((e: Seq[Double], v: Seq[Double]) =>
+      SystemicVariableCF.gammaMgf(v)
+    )
+    val el = ll.portfolioExpectation()
+    val distEl = FangOost.getExpectation(xMin, 0.0, cf)
+    println(el)
+    println(distEl)
+
+    val variance = ll.portfolioVariance()
+
+    val distVar =
+      FangOost.getVarianceWithExpectation(xMin, 0.0, el, cf)
+    println(variance)
+    println(distVar)
+    assert(math.abs(variance - distVar) < 1000)
+    assert(el === distEl)
 
   }
 }
