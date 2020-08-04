@@ -67,9 +67,9 @@ object LoanLossSim {
 
 case class PortfolioMetrics(
     cf: Seq[Complex],
-    el: Seq[Double],
-    variance: Seq[Double],
-    lambda: Double
+    expectation: Double,
+    variance: Double,
+    xMin: Double
 )
 case class PortfolioMoments(
     el: Seq[Double],
@@ -84,18 +84,18 @@ class LoanLoss(
 ) {
 
   val numWeight = systemicExpectation.length
-  var cf: Seq[Complex] = Seq()
-  private var loanEl: Seq[Double] = Seq()
+  //var cf: Seq[Complex] = Seq()
+  /*private var loanEl: Seq[Double] = Seq()
   private var loanVariance: Seq[Double] = Seq()
-  private var loanLambda: Double = 0.0
-  var xMin: Double = 0.0
+  private var loanLambda: Double = 0.0*/
+  //var xMin: Double = 0.0
   //var variance = 0.0
   //var expectation = 0.0
   private[this] def chebyschev(
       expectation: Double,
       variance: Double
   ): Double = {
-    val k = 10.0 // represents 99% probability of being below
+    val k = 30.0 // represents 99.5% probability of being below
     expectation - k * math.sqrt(variance)
   }
   private[this] def nonLiquidityExpectation(
@@ -133,37 +133,12 @@ class LoanLoss(
     val mQL = 1.0 + q * totalLambda
     nlExpectation * mQL
   }
-  //I could memoize, but overly complex given how simple the function is to compute
-  def portfolioVariance(
-  ): Double = {
-    val totalLambda = lambda + loanLambda
-    nonLiquidityVariance(
-      loanEl,
-      loanVariance,
-      systemicExpectation,
-      systemicVariance
-    ) * math.pow(
-      1.0 + q * totalLambda,
-      2.0
-    ) - nonLiquidityExpectation(
-      loanEl,
-      systemicExpectation
-    ) * q * totalLambda * totalLambda
-  }
-  def portfolioExpectation(
-  ): Double = {
-    nonLiquidityExpectation(
-      loanEl,
-      systemicExpectation
-    ) * (1.0 + q * (lambda + loanLambda))
-  }
 
   private[this] def getLiquidityRiskFn(
       q: Double,
-      lambda: Double,
-      loanLambda: Double
+      totalLambda: Double
   ): (Complex) => Complex = { (u: Complex) =>
-    u - ((-u * (lambda + loanLambda)).exp - 1.0) * q
+    u - ((-u * totalLambda).exp - 1.0) * q
   }
   private[this] def getLogLpmCf(
       lgdCf: (Complex, Double, Double) => Complex,
@@ -177,7 +152,7 @@ class LoanLoss(
         lgdVariance: Double
     ) => (lgdCf(liquidityCf(u), lgd * balance, lgdVariance) - 1.0) * pd
   }
-
+  /*
   def getRiskContributionForLoan(
       balance: Double,
       lgd: Double,
@@ -219,7 +194,7 @@ class LoanLoss(
       loanEl
     ).zipped.map(_ * _ * _).sum
     elScalarIncremental * expectationIncremental + elScalarTotal * nlExpectation + c * (varianceScalarIncremental * varianceIncremental + varianceScalarTotal * nlVariance - expectationIncremental * q * lambda * lambda - nlExpectation * varianceElTotal) / portfolioStandardDeviation
-  }
+  }*/
 
   private[this] def getMoments(loanDF: DataFrame) = {
     val elUDF = udf(SparkMethods.getElFromLoan _)
@@ -262,7 +237,6 @@ class LoanLoss(
           )
       })
       .head
-
     val nlE = nonLiquidityExpectation(results.el, systemicExpectation)
     val variance = portfolioVariancePure(
       q,
@@ -277,19 +251,19 @@ class LoanLoss(
     )
     val expectation = portfolioExpectationPure(q, results.lambda + lambda, nlE)
     val pXMin = chebyschev(expectation, variance)
-    (results.el, results.variance, results.lambda, pXMin)
+    (expectation, variance, results.lambda, pXMin)
   }
   def getPortfolioMetrics(
       loanDF: DataFrame,
       numU: Int,
       lgdCf: (Complex, Double, Double) => Complex
-  ): Unit = {
-    val (pEl, pVariance, pLambda, pXMin) = getMoments(
+  ): PortfolioMetrics = {
+    val (expectation, variance, pLambda, xMin) = getMoments(
       loanDF
     )
-    val uDomain = FangOost.getUDomain(numU, pXMin, 0.0)
+    val uDomain = FangOost.getUDomain(numU, xMin, 0.0)
     val logCf =
-      getLogLpmCf(lgdCf, getLiquidityRiskFn(q, lambda, pLambda))
+      getLogLpmCf(lgdCf, getLiquidityRiskFn(q, lambda + pLambda))
     val logLpmCFUDF =
       udf((balance: Double, pd: Double, lgd: Double, lgdVariance: Double) =>
         uDomain
@@ -301,7 +275,7 @@ class LoanLoss(
 
     val cfUDF = udf(SparkMethods.getCFForLoan _)
     val complexSum = new SumArrayElement
-    cf = loanDF
+    val cf = loanDF
       .withColumn(
         "logCf",
         logLpmCFUDF(col("balance"), col("pd"), col("lgd"), col("lgd_variance"))
@@ -325,16 +299,13 @@ class LoanLoss(
           cf.map(v => Complex(v(0), v(1)))
       })
       .head
-    loanEl = pEl
-    loanVariance = pVariance
-    xMin = pXMin
-    loanLambda = pLambda
+    PortfolioMetrics(cf, expectation, variance, xMin)
 
   }
   def getFullCF(
+      cf: Seq[Complex],
       mgf: (Seq[Double], Seq[Double]) => (Seq[Complex]) => Complex
   ): Seq[Complex] = {
-
     cf.grouped(numWeight).map(mgf(systemicExpectation, systemicVariance)).toSeq
   }
 
