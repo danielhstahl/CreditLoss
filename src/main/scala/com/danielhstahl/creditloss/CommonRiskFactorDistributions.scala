@@ -21,4 +21,7 @@ object LgdCF {
   def degenerateCf(u: Complex, l: Double, lgdVariance: Double): Complex = {
     (-u * l).exp //negative since l is a loss
   }
+  def gammaCf(u: Complex, l: Double, lgdVariance: Double): Complex = {
+    (1.0 + u * l * lgdVariance).pow(-1.0 / lgdVariance)
+  }
 }
