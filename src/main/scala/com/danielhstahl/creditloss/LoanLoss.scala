@@ -74,7 +74,8 @@ case class PortfolioMetrics(
 case class PortfolioMoments(
     el: Seq[Double],
     variance: Seq[Double],
-    lambda: Double
+    lambda: Double,
+    xMin: Double
 )
 class LoanLoss(
     q: Double,
@@ -84,20 +85,7 @@ class LoanLoss(
 ) {
 
   val numWeight = systemicExpectation.length
-  //var cf: Seq[Complex] = Seq()
-  /*private var loanEl: Seq[Double] = Seq()
-  private var loanVariance: Seq[Double] = Seq()
-  private var loanLambda: Double = 0.0*/
-  //var xMin: Double = 0.0
-  //var variance = 0.0
-  //var expectation = 0.0
-  private[this] def chebyschev(
-      expectation: Double,
-      variance: Double
-  ): Double = {
-    val k = 30.0 // represents 99.5% probability of being below
-    expectation - k * math.sqrt(variance)
-  }
+
   private[this] def nonLiquidityExpectation(
       loanEl: Seq[Double],
       systemicExpectation: Seq[Double]
@@ -200,6 +188,8 @@ class LoanLoss(
     val elUDF = udf(SparkMethods.getElFromLoan _)
     val varUDF = udf(SparkMethods.getVarFromLoan _)
     val lambdaUDF = udf(SparkMethods.getLambdaFromLoan _)
+    val totalUDF = udf(SparkMethods.getTotalPotentialLossFromLoan _)
+
     val doubleSum = new SumDoubleElement
     val results = loanDF
       .withColumn(
@@ -218,22 +208,29 @@ class LoanLoss(
         )
       )
       .withColumn("lambda", lambdaUDF(col("balance"), col("r"), col("num")))
+      .withColumn(
+        "totalOutputSpace",
+        totalUDF(col("balance"), col("r"), col("lgd"), col("num"))
+      )
       .agg(
         doubleSum(col("el")).alias("el"),
         doubleSum(col("variance")).alias("variance"),
-        sum("lambda").alias("lambda")
+        sum("lambda").alias("lambda"),
+        sum("totalOutputSpace").alias("xMin")
       )
       .collect()
       .map({
         case Row(
               el: Seq[Double],
               variance: Seq[Double],
-              lambda: Double
+              lambda: Double,
+              xMin: Double
             ) =>
           PortfolioMoments(
             el,
             variance,
-            lambda
+            lambda,
+            xMin
           )
       })
       .head
@@ -250,8 +247,7 @@ class LoanLoss(
       )
     )
     val expectation = portfolioExpectationPure(q, results.lambda + lambda, nlE)
-    val pXMin = chebyschev(expectation, variance)
-    (expectation, variance, results.lambda, pXMin)
+    (expectation, variance, results.lambda, results.xMin)
   }
   def getPortfolioMetrics(
       loanDF: DataFrame,
@@ -355,5 +351,13 @@ object SparkMethods {
       num: Int
   ): Double = {
     balance * r * num
+  }
+  def getTotalPotentialLossFromLoan(
+      balance: Double,
+      r: Double,
+      lgd: Double,
+      num: Int
+  ): Double = {
+    -balance * (r + lgd) * num
   }
 }
