@@ -30,13 +30,20 @@ val ll = new LoanLoss(
     systemicExpectation,
     systemicVariance    
 )
-val numDiscreteU = 256 //steps in the complex plain.  The higher, the more accurate the algorithm, but also slower
 
-//this is the primary function to run the model.  It is computationally intensive.
+//steps in the complex plain.  
+//The higher, the more accurate the algorithm, but also slower
+val numDiscreteU = 256 
+
+//this is the primary function to run the model.  
+//It is computationally intensive.
 val metrics = ll.getPortfolioMetrics(
     loanDF, 
     numDiscreteU,
-    LgdCF.degenerateCf //the characteristic function of the loss given default distribution, scaled by the potential loss.  In this case, there is no "distribution"; its simply a constant
+    //the characteristic function of the loss given default distribution, 
+    //scaled by the potential loss.  In this case, there is no 
+    //"distribution"; its simply a constant
+    LgdCF.degenerateCf 
 )
 //get the discrete characteristic function of the full distribution
 val cf = ll.getFullCF(
