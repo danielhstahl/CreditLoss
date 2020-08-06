@@ -48,7 +48,7 @@ val ll = new LoanLoss(
     systemicVariance    
 )
 
-//steps in the complex plain.  
+//steps in the complex plane.  
 //The higher, the more accurate the algorithm, but also slower
 val numDiscreteU = 256 
 
